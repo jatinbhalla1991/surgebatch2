@@ -1,2 +1,6 @@
+FROM ubuntu:latest AS mynginx
+COPY index.html /home/ubuntu
+
+
 FROM nginx:latest
-COPY index.html /usr/share/nginx/html/index.html
+COPY --from=mynginx /home/ubuntu/index.html /usr/share/nginx/html/index.html

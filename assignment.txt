@@ -47,3 +47,12 @@ Implement appropriate safeguards, such as manual approval before applying or des
 question4: 
 
 try to setup a agent/node for jenkins and then use that node to run the pipelines
+
+29 oct: 
+docker
+assignments:
+1. write a code (python,dot,java)
+2. create a mutistage stage docker file to run your application
+3. create a docker compose file for frontend, backend, database(volumes,networking)
+4. try to push the image on the acr(manually)
+5. create a jenkins pipeline which will build the image and push it on the acr
