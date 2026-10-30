@@ -19,7 +19,9 @@ variable "vm_size" {
 }
 
 variable "kubernetes_version" {
+  description = "AKS Kubernetes version. Leave null to let Azure use the latest recommended supported version."
   type        = string
+  default     = null
 }
 
 variable "environment" {

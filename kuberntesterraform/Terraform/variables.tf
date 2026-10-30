@@ -28,13 +28,13 @@ variable "node_count" {
 variable "vm_size" {
   description = "VM size for node pool"
   type        = string
-  default     = "Standard_DS2_v2"
+  default     = "Standard_B2s_v2"
 }
 
 variable "kubernetes_version" {
-  description = "AKS Kubernetes version"
+  description = "AKS Kubernetes version. Leave null to let Azure use the latest recommended supported version."
   type        = string
-  default     = "1.29.2"
+  default     = null
 }
 
 variable "environment" {
