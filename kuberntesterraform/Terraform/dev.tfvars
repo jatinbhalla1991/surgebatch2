@@ -1,0 +1,9 @@
+resource_group_name = "demo"
+location = "eastus"
+sql_server_name = "demo123456319"
+sql_db_name = "demo"
+aks_cluster_name = "aks-demo-cluster"
+node_count = 2
+vm_size = "standard_a2_v2"
+kubernetes_version = "1.30.1"
+environment = "dev"
