@@ -1,0 +1,76 @@
+name: Java Docker - Build & Publish to Nexus
+
+# Builds/tests the Maven project in javadocker/, validates the Docker image build,
+# and publishes the resulting JAR to the Nexus Maven repository at
+# http://172.198.50.215:8081/ (see javadocker/pom.xml <distributionManagement>).
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - "javadocker/**"
+      - ".github/workflows/java-docker-nexus.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WORKDIR: javadocker
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: ${{ env.WORKDIR }}/pom.xml
+
+      - name: Configure Maven settings.xml for Nexus
+        env:
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<EOF
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+            <servers>
+              <!-- id must match <distributionManagement> repository/snapshotRepository id in pom.xml -->
+              <server>
+                <id>nexus</id>
+                <username>${NEXUS_USERNAME}</username>
+                <password>${NEXUS_PASSWORD}</password>
+              </server>
+            </servers>
+            <mirrors>
+              <!-- Overrides Maven's bundled default mirror (same id) that blocks plain-HTTP
+                   repositories since Maven 3.8.1, so deploys to the HTTP Nexus above work. -->
+              <mirror>
+                <id>maven-default-http-blocker</id>
+                <mirrorOf>external:http:*</mirrorOf>
+                <name>Allow internal HTTP Nexus</name>
+                <url>http://0.0.0.0/blocked-by-mirror</url>
+                <blocked>false</blocked>
+              </mirror>
+            </mirrors>
+          </settings>
+          EOF
+
+      - name: Build and test (mvn verify)
+        working-directory: ${{ env.WORKDIR }}
+        run: mvn -B clean verify
+
+      - name: Build Docker image (validation only, not pushed)
+        working-directory: ${{ env.WORKDIR }}
+        run: docker build -t javadocker-sample:${{ github.run_number }} .
+
+      - name: Publish JAR to Nexus
+        working-directory: ${{ env.WORKDIR }}
+        run: mvn -B deploy -DskipTests
