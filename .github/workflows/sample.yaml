@@ -31,7 +31,7 @@ jobs:
           java-version: "17"
           cache: maven
           cache-dependency-path: ${{ env.WORKDIR }}/pom.xml
-      - name: Update Maven version
+      - name: Update Package version
         run: |
           mvn versions:set -DnewVersion=1.0.${{ github.run_number }}
           mvn versions:commit
