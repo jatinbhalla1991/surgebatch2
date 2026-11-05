@@ -7,7 +7,7 @@ on:
       - master
   pull_request:
     branches:
-      - master
+      - test
 
 permissions:
   contents: read
@@ -31,7 +31,10 @@ jobs:
           java-version: "17"
           cache: maven
           cache-dependency-path: ${{ env.WORKDIR }}/pom.xml
-
+      - name: Update Maven version
+        run: |
+          mvn versions:set -DnewVersion=1.0.${{ github.run_number }}
+          mvn versions:commit
       - name: Configure Maven settings.xml for Nexus
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
