@@ -35,6 +35,7 @@ jobs:
         run: |
           mvn versions:set -DnewVersion=1.0.${{ github.run_number }}
           mvn versions:commit
+        working-directory: ${{ env.WORKDIR }}
       - name: Configure Maven settings.xml for Nexus
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
