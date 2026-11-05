@@ -1,0 +1,47 @@
+name: nexusdemo
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+    WORKDIR: javadocker
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v3
+
+            - name: Set up JDK 17
+              uses: actions/setup-java@v4
+              with:
+                distribution: temurin
+                java-version: "17"
+                cache: maven
+                cache-dependency-path: ${{ env.WORKDIR }}/pom.xml
+                
+            - name: Build with Maven
+              run: mvn clean install
+              working-directory: ${{ env.WORKDIR }}
+              
+            # - name: Deploy to Nexus
+            #   run: mvn deploy
+            #   working-directory: ${{ env.WORKDIR }}
+            #   env:
+            #       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+            #       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+
+            - name: Publish jar package as workflow artifact
+              uses: actions/upload-artifact@v4
+              with:
+                name: jar-package
+                path: ${{ env.WORKDIR }}/target/*.jar
