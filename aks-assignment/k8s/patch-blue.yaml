@@ -1,0 +1,4 @@
+spec:
+  selector:
+    app: myapp
+    version: blue

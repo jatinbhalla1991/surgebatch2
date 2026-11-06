@@ -1,0 +1,22 @@
+# Define the V2 (green) Kubernetes Deployment here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-green
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+      version: green
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: green
+    spec:
+      containers:
+        - name: myapp
+          image: raghuacr2026.azurecr.io/myapp:v2
+          ports:
+            - containerPort: 80
