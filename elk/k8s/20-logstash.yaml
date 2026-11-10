@@ -12,8 +12,8 @@ data:
     }
 
     filter {
-      # the sample "web" service is nginx; parse its access log into structured fields
-      if [kubernetes][container][name] == "sample" {
+      # the sample app's "sample" container is nginx; parse its access log into structured fields
+      if [kubernetes][namespace] == "sample" and [kubernetes][container][name] == "sample" {
         grok {
           match => { "message" => "%{COMBINEDAPACHELOG}" }
         }
@@ -25,9 +25,18 @@ data:
     }
 
     output {
-      elasticsearch {
-        hosts => ["http://elasticsearch:9200"]
-        index => "k8s-logs-%{+YYYY.MM.dd}"
+      # Node-level system logs (kubelet/containerd via journald) go to their
+      # own index, separate from per-pod container logs.
+      if [log_type] == "node-system" {
+        elasticsearch {
+          hosts => ["http://elasticsearch:9200"]
+          index => "k8s-system-logs-%{+YYYY.MM.dd}"
+        }
+      } else {
+        elasticsearch {
+          hosts => ["http://elasticsearch:9200"]
+          index => "k8s-logs-%{+YYYY.MM.dd}"
+        }
       }
     }
 
@@ -56,9 +65,11 @@ spec:
         ports:
         - containerPort: 5044
         resources:
+          # cpu request kept modest so a 2-node/2-vCPU-per-node cluster still
+          # has headroom to schedule the Filebeat DaemonSet pod on this node.
           requests:
             memory: "512Mi"
-            cpu: "250m"
+            cpu: "150m"
           limits:
             memory: "1Gi"
             cpu: "500m"

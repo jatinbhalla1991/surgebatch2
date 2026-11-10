@@ -1,3 +1,18 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: es-data
+  namespace: logging
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # No storageClassName set so AKS provisions an Azure Disk from whichever
+  # StorageClass is marked as default (e.g. "managed-csi"/"default").
+  resources:
+    requests:
+      storage: 10Gi
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -5,6 +20,12 @@ metadata:
   namespace: logging
 spec:
   replicas: 1
+  # Recreate (not the default RollingUpdate) avoids a deadlock: with a single
+  # replica backed by a ReadWriteOnce PVC, RollingUpdate tries to start the new
+  # pod (on possibly a different node) before the old one releases the volume
+  # and its CPU reservation, which can never succeed.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: elasticsearch
@@ -13,6 +34,10 @@ spec:
       labels:
         app: elasticsearch
     spec:
+      # Azure Disk volumes are mounted root-owned; fsGroup makes them writable
+      # by the elasticsearch process, which runs as uid 1000 in the image.
+      securityContext:
+        fsGroup: 1000
       containers:
       - name: elasticsearch
         image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
@@ -29,9 +54,11 @@ spec:
         - containerPort: 9300
           name: transport
         resources:
+          # cpu request kept modest so a 2-node/2-vCPU-per-node cluster still
+          # has headroom to schedule the Filebeat DaemonSet pod on this node.
           requests:
             memory: "1Gi"
-            cpu: "500m"
+            cpu: "400m"
           limits:
             memory: "2Gi"
             cpu: "1000m"
@@ -44,11 +71,10 @@ spec:
             port: 9200
           initialDelaySeconds: 30
           periodSeconds: 10
-      # NOTE: emptyDir keeps this a quick-start/practice stack with no storage-class
-      # dependency. Data is lost on pod restart - swap for a PVC for anything durable.
       volumes:
       - name: es-data
-        emptyDir: {}
+        persistentVolumeClaim:
+          claimName: es-data
 
 ---
 apiVersion: v1
