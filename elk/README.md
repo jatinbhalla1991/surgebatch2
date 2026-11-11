@@ -21,24 +21,27 @@ TLS/cert setup - don't reuse that setting as-is for anything production-facing.
 ## How it fits together
 
 ```
-Filebeat (DaemonSet, 1 pod per node)
-   |  tails container logs (/var/log/containers) + node journald (kubelet/containerd)
-   v
-Logstash (Deployment)
-   |  parses/enriches (e.g. nginx access-log grok -> structured fields)
-   |  routes to an index based on log type
-   v
-Elasticsearch (Deployment + PersistentVolumeClaim)
-   |  stores and indexes the documents
-   v
-Kibana (Deployment, LoadBalancer Service)
-      search, filter, live-tail, and visualize in the browser
+Filebeat (DaemonSet, 1 pod per node)             Metricbeat (DaemonSet + Deployment)
+   |  tails container logs + node journald           |  polls kubelet stats (node/pod/container/
+   |  (kubelet/containerd)                           |  volume) + watches the API for events
+   v                                                  v
+                     Logstash (Deployment)
+                        |  parses/enriches (e.g. nginx access-log grok -> structured fields)
+                        |  routes to an index based on log type / beat
+                        v
+                     Elasticsearch (Deployment + PersistentVolumeClaim)
+                        |  stores and indexes the documents
+                        v
+                     Kibana (Deployment, LoadBalancer Service)
+                              search, filter, live-tail, and visualize in the browser
 ```
 
-Each component is a separate Kubernetes workload on purpose: Filebeat must run
-on *every* node (hence `DaemonSet`), while Logstash/Elasticsearch/Kibana are
-each a single logical service (hence `Deployment`). Manifests live in `k8s/`
-and deploy everything into a `logging` namespace.
+Each component is a separate Kubernetes workload on purpose: Filebeat and
+Metricbeat's node-level metricsets must run on *every* node (hence
+`DaemonSet`), Metricbeat's cluster-wide event metricset must run exactly once
+(hence a separate single-replica `Deployment`), while Logstash/Elasticsearch/
+Kibana are each a single logical service (hence `Deployment`). Manifests live
+in `k8s/` and deploy everything into a `logging` namespace.
 
 ## Step-by-step: deploy on AKS
 
@@ -108,6 +111,7 @@ kubectl apply -f k8s\10-elasticsearch.yaml
 kubectl apply -f k8s\20-logstash.yaml
 kubectl apply -f k8s\30-kibana.yaml
 kubectl apply -f k8s\40-filebeat.yaml
+kubectl apply -f k8s\50-metricbeat.yaml
 ```
 
 **Verify:**
@@ -145,6 +149,8 @@ Discover has nothing to show.
    index, across all namespaces) with time field `@timestamp`.
 3. Create a second one for `k8s-system-logs-*` (node kubelet/containerd logs)
    the same way.
+4. Create a third one for `k8s-metrics-*` (Metricbeat's node/pod/container/
+   volume/event metrics) the same way.
 
 ### Step 7 - Explore logs in Discover
 
@@ -259,6 +265,37 @@ kubectl rollout restart daemonset filebeat -n logging
 > and aren't reachable by Filebeat - shipping those requires a separate Azure
 > Monitor **Diagnostic settings** pipeline on the AKS resource.
 
+## Metrics shipped by Metricbeat
+
+Deployed via `k8s/50-metricbeat.yaml`, all land in the **`k8s-metrics-*`**
+index (separate from logs), via Metricbeat's `kubernetes` module:
+
+- **Node CPU/memory usage** (`node` metricset) and the kubelet's own
+  machine-level view (`system` metricset).
+- **Pod CPU/memory usage** (`pod` metricset).
+- **Container statistics** (`container` metricset) - per-container CPU,
+  memory, and I/O, one level more granular than the pod-level metricset.
+- **Volume usage** (`volume` metricset) - PVC capacity/usage, e.g.
+  Elasticsearch's `es-data` PVC.
+- **Kubernetes events** (`event` metricset) - the same events `kubectl get
+  events -A` shows (pod scheduled, image pulled, liveness probe failed,
+  etc.), but durably stored and searchable instead of evicted after ~1 hour
+  like the live `kubectl` view.
+
+The `node`/`system`/`pod`/`container`/`volume` metricsets run as a
+`DaemonSet` (one node's kubelet can only report that node's own stats); the
+`event` metricset runs as a separate single-replica `Deployment` (events are
+cluster-wide, so running it per-node would duplicate every event). See
+[`k8s/50-metricbeat.md`](k8s/50-metricbeat.md) for the full breakdown.
+
+In Kibana, filter `event.dataset` to tell metricsets apart (e.g.
+`event.dataset: "kubernetes.pod"`), or `kubernetes.node.name`/
+`kubernetes.pod.name` to scope to a specific node/pod. A metric visualization
+with **Average** of `kubernetes.pod.cpu.usage.node.pct` (or the equivalent
+memory field), split by `kubernetes.pod.name`, gives a per-pod CPU/memory
+chart - the metrics equivalent of the hits-over-time chart described in
+Step 8 above.
+
 ## Troubleshooting
 
 Real problems hit (and fixed in these manifests) while validating this stack
@@ -269,19 +306,26 @@ scheduling/rollouts actually work:
   Kubernetes autodiscover `templates` entry needs either a real `condition`
   (e.g. `equals`/`contains`) or no `condition` key at all for a catch-all
   template - an empty `condition: {}` is rejected by Filebeat.
-- **Filebeat DaemonSet pod stuck `Pending`**: on small clusters (e.g. 2 nodes /
-  `Standard_D2s_v3`) cumulative pod CPU *requests* can fill a node's
-  allocatable CPU before the DaemonSet pod gets scheduled (`kubectl describe
-  pod` shows `Insufficient cpu`). `k8s/10-elasticsearch.yaml` and
+- **Filebeat/Metricbeat DaemonSet pod stuck `Pending`**: on small clusters
+  (e.g. 2 nodes / `Standard_D2s_v3`) cumulative pod CPU *requests* can fill a
+  node's allocatable CPU before the DaemonSet pod gets scheduled (`kubectl
+  describe pod` shows `Insufficient cpu`). `k8s/10-elasticsearch.yaml` and
   `k8s/20-logstash.yaml` intentionally use modest CPU requests (`400m`/`150m`)
-  for this reason - lower them further if you hit this on an even smaller
-  cluster.
-- **Elasticsearch rollout stuck on "1 old replicas are pending termination"**:
-  a single-replica Deployment backed by a `ReadWriteOnce` PVC can't do the
-  default `RollingUpdate` - the new pod can't mount the volume until the old
-  one releases it, but the old one won't terminate until the new one is
-  ready. `k8s/10-elasticsearch.yaml` sets `strategy.type: Recreate` to avoid
-  this deadlock - keep that if you change the Elasticsearch manifest.
+  for this reason - lower them further (or Metricbeat's `100m` requests in
+  `k8s/50-metricbeat.yaml`) if you hit this on an even smaller cluster.
+- **Elasticsearch/Logstash rollout stuck on "Insufficient cpu" or "1 old
+  replicas are pending termination"**: two related deadlocks on a
+  small/tightly-packed cluster - (a) a single-replica Deployment backed by a
+  `ReadWriteOnce` PVC can't do the default `RollingUpdate` (the new pod can't
+  mount the volume until the old one releases it, but the old one won't
+  terminate until the new one is ready), and (b) even without a PVC, the
+  default `RollingUpdate`'s temporary surge pod needs spare CPU that may not
+  exist (this is what happened to Logstash once Metricbeat's extra DaemonSet/
+  Deployment pods used up the remaining headroom). Both
+  `k8s/10-elasticsearch.yaml` and `k8s/20-logstash.yaml` set
+  `strategy.type: Recreate` to avoid this - keep that if you change either
+  manifest, and consider the same fix for any other single-replica
+  `Deployment` you add to this cluster.
 - **A multi-replica Deployment rollout stuck on "Insufficient cpu" for the
   surge pod**: the default `RollingUpdate` strategy creates one extra pod
   before removing an old one (`maxSurge: 25%` rounds up to 1), which briefly
@@ -310,11 +354,25 @@ Azure Disk), so only do that once you no longer need the indexed logs.
 
 ## Config file reference
 
-- `k8s/20-logstash.yaml` (`logstash-pipeline` ConfigMap) - beats input ->
-  optional nginx grok parsing -> Elasticsearch output, routed to `k8s-logs-*`
-  or `k8s-system-logs-*`.
-- `k8s/40-filebeat.yaml` (`filebeat-config` ConfigMap) - Kubernetes
-  autodiscover (all namespaces) + journald inputs for node system logs.
+Each manifest in `k8s/` has a companion `.md` file explaining that file in
+detail (resources defined, purpose of every field, key decisions):
+
+- [`k8s/00-namespace.md`](k8s/00-namespace.md) - the shared `logging` namespace.
+- [`k8s/10-elasticsearch.md`](k8s/10-elasticsearch.md) - the `es-data` PVC,
+  the single-node Elasticsearch `Deployment`, and its `Service`.
+- [`k8s/20-logstash.md`](k8s/20-logstash.md) - the `logstash-pipeline`
+  ConfigMap (beats input -> optional nginx grok parsing -> Elasticsearch
+  output, routed to `k8s-logs-*` or `k8s-system-logs-*`), the `Deployment`,
+  and its `Service`.
+- [`k8s/30-kibana.md`](k8s/30-kibana.md) - the Kibana `Deployment` and its
+  `LoadBalancer` `Service`.
+- [`k8s/40-filebeat.md`](k8s/40-filebeat.md) - the RBAC objects, the
+  `filebeat-config` ConfigMap (Kubernetes autodiscover across all namespaces +
+  journald inputs for node system logs), and the `DaemonSet`.
+- [`k8s/50-metricbeat.md`](k8s/50-metricbeat.md) - the shared RBAC objects,
+  the two ConfigMaps (kubelet-sourced node/pod/container/volume metricsets vs.
+  the API-sourced event metricset), the `DaemonSet`, and the single-replica
+  `Deployment`.
 
 ## Local (Docker Compose) - optional, for quick local testing
 
@@ -346,7 +404,7 @@ In Kibana, create a data view for the `docker-logs-*` index pattern (Stack
 Management > Data Views) to start browsing logs.
 
 Config files:
-- `logstash/pipeline/logstash.conf` - beats input -> optional nginx grok parsing -> Elasticsearch output
+- [`logstash/pipeline/logstash.conf`](logstash/pipeline/logstash.conf) ([explained](logstash/pipeline/logstash.conf.md)) - beats input -> optional nginx grok parsing -> Elasticsearch output
 - `filebeat/filebeat.yml` - Docker autodiscover (hints-based, all containers)
 
 ## Checkpoints
@@ -363,3 +421,7 @@ Config files:
       indices, and why are they separate?
 - [ ] Why can't this Filebeat setup ship AKS's kube-apiserver/scheduler logs,
       and what would you need instead?
+- [ ] Why does Metricbeat's `event` metricset run as a `Deployment` while its
+      `node`/`pod`/`container` metricsets run as a `DaemonSet`?
+- [ ] What's the difference between what Filebeat ships and what Metricbeat
+      ships - could you answer "is the app slow?" with just one of them?

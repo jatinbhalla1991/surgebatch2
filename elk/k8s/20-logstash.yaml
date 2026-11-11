@@ -25,9 +25,18 @@ data:
     }
 
     output {
+      # Metricbeat documents (node/pod/container/event metrics, 50-metricbeat.yaml)
+      # go to their own index, separate from log documents. "[@metadata][beat]"
+      # is set automatically by the Logstash beats input based on which Beat
+      # shipped the event - no custom field needed on the Metricbeat side.
+      if [@metadata][beat] == "metricbeat" {
+        elasticsearch {
+          hosts => ["http://elasticsearch:9200"]
+          index => "k8s-metrics-%{+YYYY.MM.dd}"
+        }
       # Node-level system logs (kubelet/containerd via journald) go to their
       # own index, separate from per-pod container logs.
-      if [log_type] == "node-system" {
+      } else if [log_type] == "node-system" {
         elasticsearch {
           hosts => ["http://elasticsearch:9200"]
           index => "k8s-system-logs-%{+YYYY.MM.dd}"
@@ -48,6 +57,12 @@ metadata:
   namespace: logging
 spec:
   replicas: 1
+  # Recreate avoids the same class of problem as Elasticsearch's PVC deadlock
+  # (see 10-elasticsearch.yaml): on a small/tightly-packed cluster, the default
+  # RollingUpdate's temporary surge pod can get stuck "Insufficient cpu" since
+  # there's no spare capacity for old+new to run briefly at once.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: logstash
