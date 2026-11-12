@@ -4,20 +4,20 @@ module "resource_group" {
   location = var.location
 }
 
-module "sql_server" {
-  source = "./az.sqlserver"
-  depends_on = [ module.resource_group ]
-  sql_server_name= var.sql_server_name
-  resource_group_name = module.resource_group.resource_group_name
-  location = "westus"
-}
+# module "sql_server" {
+#   source = "./az.sqlserver"
+#   depends_on = [ module.resource_group ]
+#   sql_server_name= var.sql_server_name
+#   resource_group_name = module.resource_group.resource_group_name
+#   location = "westus"
+# }
 
-module "sql-db" {
-  source = "./az.sqldb"
-  depends_on = [ module.sql_server ]
-  sql_db_name = var.sql_db_name
-  sql_server_id = module.sql_server.sql_server_id
-}
+# module "sql-db" {
+#   source = "./az.sqldb"
+#   depends_on = [ module.sql_server ]
+#   sql_db_name = var.sql_db_name
+#   sql_server_id = module.sql_server.sql_server_id
+# }
 
 module "aks" {
   source = "./az.aks"

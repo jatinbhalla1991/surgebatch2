@@ -41,14 +41,39 @@ data:
         - type: kubernetes
           node: ${NODE_NAME}
           templates:
-            # Only ship logs for the "sample" app namespace (see docker/menifest.yaml)
-            - condition:
-                equals:
-                  kubernetes.namespace: sample
-              config:
+            # No "condition" key makes this the catch-all/default template, so
+            # it ships container logs for every pod in every namespace - app
+            # workloads (e.g. "sample", see docker/menifest.yaml) as well as
+            # cluster system components in kube-system (coredns,
+            # metrics-server, azure-cni, konnectivity-agent, etc.).
+            - config:
                 - type: container
                   paths:
                     - /var/log/containers/*${data.kubernetes.container.id}.log
+                  fields:
+                    log_type: k8s-container
+                  fields_under_root: true
+
+    # Node-level OS/system logs, read straight from each node's systemd
+    # journal - not tied to any namespace or pod. Requires the host journal
+    # directories mounted below (see varlogjournal/runlogjournal volumes).
+    filebeat.inputs:
+      - type: journald
+        id: kubelet
+        include_matches:
+          - _SYSTEMD_UNIT=kubelet.service
+        fields:
+          log_type: node-system
+          systemd_unit: kubelet
+        fields_under_root: true
+      - type: journald
+        id: containerd
+        include_matches:
+          - _SYSTEMD_UNIT=containerd.service
+        fields:
+          log_type: node-system
+          systemd_unit: containerd
+        fields_under_root: true
 
     processors:
       - add_kubernetes_metadata:
@@ -109,6 +134,15 @@ spec:
         - name: varlibdockercontainers
           mountPath: /var/lib/docker/containers
           readOnly: true
+        - name: varlogjournal
+          mountPath: /var/log/journal
+          readOnly: true
+        - name: runlogjournal
+          mountPath: /run/log/journal
+          readOnly: true
+        - name: etcmachineid
+          mountPath: /etc/machine-id
+          readOnly: true
       volumes:
       - name: config
         configMap:
@@ -122,3 +156,15 @@ spec:
       - name: varlibdockercontainers
         hostPath:
           path: /var/lib/docker/containers
+      - name: varlogjournal
+        hostPath:
+          path: /var/log/journal
+          type: DirectoryOrCreate
+      - name: runlogjournal
+        hostPath:
+          path: /run/log/journal
+          type: DirectoryOrCreate
+      - name: etcmachineid
+        hostPath:
+          path: /etc/machine-id
+          type: File

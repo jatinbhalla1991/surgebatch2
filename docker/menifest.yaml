@@ -12,6 +12,14 @@ metadata:
   namespace: sample
 spec:
   replicas: 2
+  # maxSurge: 0 means Kubernetes frees capacity (terminates an old pod) before
+  # starting a new one, avoiding "Insufficient cpu" deadlocks on small/tightly
+  # packed clusters where there's no spare room for a temporary extra replica.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: sample
@@ -22,7 +30,7 @@ spec:
     spec:
       containers:
       - name: sample
-        image: jatinbhalla1991/jatinnginx
+        image: nginx
         resources:
           limits:
             memory: "128Mi"

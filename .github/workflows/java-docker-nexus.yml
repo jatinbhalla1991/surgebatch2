@@ -4,11 +4,6 @@ name: Java Docker - Build & Publish to Nexus
 # and publishes the resulting JAR to the Nexus Maven repository at
 # http://172.198.50.215:8081/ (see javadocker/pom.xml <distributionManagement>).
 on:
-  push:
-    branches: [ "main" ]
-    paths:
-      - "javadocker/**"
-      - ".github/workflows/java-docker-nexus.yml"
   workflow_dispatch:
 
 permissions:
