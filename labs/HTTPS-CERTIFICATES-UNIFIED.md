@@ -1,4 +1,4 @@
-# Lab 2: HTTPS - Creating, Installing and Renewing Certificates (Linux)
+# Lab: HTTPS - Creating, Installing & Renewing Certificates (Linux)
 
 **Goal:** Understand how SSL/TLS and HTTPS work, then get hands-on practice creating a private key and CSR, issuing a certificate (both self-signed/self-CA and Let's Encrypt), installing it on a web server (Nginx and Apache), and setting up renewal/expiry monitoring so certificates never silently expire.
 
@@ -12,39 +12,62 @@
 
 ---
 
-## Prerequisites
+## 0. Prerequisites & Setup
 
-- A Linux VM or container (Ubuntu/Debian commands shown; Dockerized alternative included below).
-- `sudo` access.
-- Basic familiarity with the command line.
+### Option A: Docker Compose (Recommended - no VM needed)
 
-Install the tools used in this lab:
+Everything is pre-built. Just run:
 
-```bash
-sudo apt update
-sudo apt install -y openssl nginx curl
+```powershell
+cd labs\https-certificates-linux
+docker compose up -d --build
+docker compose ps
 ```
 
-> **No Linux box handy?** Spin one up quickly with Docker:
-> ```bash
-> docker run -it --rm -p 8443:443 -p 8080:80 --name https-lab ubuntu:22.04 bash
-> # inside the container:
-> apt update && apt install -y openssl nginx curl sudo
-> ```
-> (Replace `sudo` with nothing, or just omit `sudo` for commands below, since you're root in the container.)
+Open a shell inside the container (you'll run commands from here):
 
-Verify your toolchain before starting:
+```powershell
+docker exec -it https-lab bash
+```
+
+Sanity-check the toolchain:
 
 ```bash
 openssl version
 nginx -v
+apache2 -v
+certbot --version
 ```
 
 Expected output looks like:
 ```
 OpenSSL 3.0.2 15 Mar 2022 (Library: OpenSSL 3.0.2 15 Mar 2022)
 nginx version: nginx/1.18.0 (Ubuntu)
+Server version: Apache/2.4.52 (Ubuntu)
+certbot 1.21.0
 ```
+
+> **Key difference:** You're root in the container, so **omit `sudo`** from every command below. If you're following on a real VM instead (Option B), prefix each command with `sudo`.
+
+### Option B: Bare Linux VM / Container
+
+If you don't want to use Docker, prepare a fresh Ubuntu/Debian VM/container:
+
+```bash
+sudo apt update
+sudo apt install -y openssl nginx curl apache2 certbot python3-certbot-nginx
+```
+
+Verify your toolchain:
+
+```bash
+openssl version
+nginx -v
+apache2 -v
+certbot --version
+```
+
+> All commands below use `sudo`. If you're inside a container where you're already root, omit `sudo`.
 
 ---
 
@@ -81,13 +104,11 @@ notBefore=Jan 15 00:00:00 2025 GMT
 notAfter=Feb 15 23:59:59 2026 GMT
 ```
 
-Now look at the full handshake details - protocol version, cipher suite negotiated, and the certificate chain depth:
+Look at protocol version, negotiated cipher, and chain depth:
 
 ```bash
 openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/dev/null | grep -E "Protocol|Cipher|depth|verify"
 ```
-
-You should see something like `Protocol  : TLSv1.3`, `Cipher    : TLS_AES_256_GCM_SHA384`, and `Verify return code: 0 (ok)`.
 
 Dump the **entire** certificate (subject, issuer, validity, SANs, public key, signature algorithm):
 
@@ -96,7 +117,7 @@ openssl s_client -connect example.com:443 -servername example.com </dev/null 2>/
   | openssl x509 -noout -text
 ```
 
-Look specifically for the `X509v3 Subject Alternative Name` and `X509v3 Basic Constraints` (`CA:FALSE` on a leaf cert) sections.
+Look specifically for `X509v3 Subject Alternative Name` and `X509v3 Basic Constraints` (`CA:FALSE` on a leaf cert).
 
 **Questions to answer (write down your answers):**
 - Who issued this certificate, and is it a root or intermediate CA?
@@ -111,22 +132,24 @@ Look specifically for the `X509v3 Subject Alternative Name` and `X509v3 Basic Co
 ### 2.1 Set up a working directory
 
 ```bash
-sudo mkdir -p /etc/ssl/lab
+mkdir -p /etc/ssl/lab
 cd /etc/ssl/lab
 ```
+
+*(Docker users: omit `sudo`. VM users: `sudo mkdir -p /etc/ssl/lab` then `cd`)*
 
 ### 2.2 Generate a private key
 
 RSA 2048-bit (widely compatible):
 
 ```bash
-sudo openssl genrsa -out lab.key 2048
-sudo chmod 600 lab.key
+openssl genrsa -out lab.key 2048
+chmod 600 lab.key
 ```
 
-> **Modern alternative:** Elliptic-curve keys are smaller and faster. If you want to try it instead:
+> **Modern alternative:** Elliptic-curve keys are smaller and faster:
 > ```bash
-> sudo openssl ecparam -name prime256v1 -genkey -noout -out lab.key
+> openssl ecparam -name prime256v1 -genkey -noout -out lab.key
 > ```
 
 Inspect the key you just created:
@@ -135,12 +158,10 @@ Inspect the key you just created:
 openssl rsa -in lab.key -noout -text | head -5
 ```
 
-You'll see the key size (`Private-Key: (2048 bit, 2 primes)`) and the modulus/exponent.
-
 ### 2.3 Create a CSR config file (recommended over `-subj` for multi-SAN certs)
 
 ```bash
-cat <<'EOF' | sudo tee lab-csr.cnf
+cat <<'EOF' > lab-csr.cnf
 [req]
 default_bits       = 2048
 prompt             = no
@@ -167,7 +188,7 @@ EOF
 ### 2.4 Generate the CSR from the key + config
 
 ```bash
-sudo openssl req -new -key lab.key -out lab.csr -config lab-csr.cnf
+openssl req -new -key lab.key -out lab.csr -config lab-csr.cnf
 ```
 
 ### 2.5 Verify the CSR
@@ -181,14 +202,14 @@ Confirm you can see:
 - `Requested Extensions: X509v3 Subject Alternative Name: DNS:lab.local, DNS:www.lab.local`
 - `Signature Algorithm: sha256WithRSAEncryption`
 
-Also verify the CSR's public key matches your private key (their modulus hashes must match):
+Verify the CSR's public key matches your private key (their hashes must match):
 
 ```bash
 openssl req -in lab.csr -noout -pubkey | openssl md5
 openssl rsa -in lab.key -pubout | openssl md5
 ```
 
-Both commands should print the **same** hash - this proves the CSR was generated from this exact key.
+Both commands should print the **same** hash - proof the CSR was generated from this exact key.
 
 > **Key takeaway:** The CSR (public key + identity) is what you send to a CA. The private key **never leaves the server**.
 
@@ -200,32 +221,32 @@ You have two realistic paths. Do Option A first (it works fully offline and teac
 
 ### Option A - Act as your own mini Certificate Authority (recommended for this lab)
 
-This is more realistic than a plain self-signed cert because it mirrors how a real CA signs your CSR, and lets you build a trust chain.
+This is more realistic than a plain self-signed cert because it mirrors how a real CA signs your CSR.
 
 **1. Create a root CA key and self-signed CA certificate:**
 
 ```bash
 cd /etc/ssl/lab
-sudo openssl genrsa -out ca.key 4096
-sudo openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt \
+openssl genrsa -out ca.key 4096
+openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt \
   -subj "/C=IN/ST=State/L=City/O=Lab-Root-CA/CN=Lab Root CA"
 ```
 
 **2. Use the CA to sign your CSR (this issues `lab.crt`):**
 
 ```bash
-cat <<'EOF' | sudo tee lab-ext.cnf
+cat <<'EOF' > lab-ext.cnf
 subjectAltName = DNS:lab.local,DNS:www.lab.local
 basicConstraints = CA:FALSE
 keyUsage = digitalSignature,keyEncipherment
 extendedKeyUsage = serverAuth
 EOF
 
-sudo openssl x509 -req -in lab.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+openssl x509 -req -in lab.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
   -out lab.crt -days 397 -sha256 -extfile lab-ext.cnf
 ```
 
-> Note: `-days 397` matches the current max lifetime enforced by browsers for publicly-trusted certs (useful habit even in a lab).
+> `-days 397` matches the current max lifetime browsers enforce for publicly-trusted certs.
 
 **3. Verify the issued certificate and the chain:**
 
@@ -234,25 +255,26 @@ openssl x509 -in lab.crt -noout -text | grep -A1 "Subject:\|Issuer:\|Subject Alt
 openssl verify -CAfile ca.crt lab.crt
 ```
 
-Expected: `lab.crt: OK` - this proves `lab.crt` was signed by `ca.crt` and the signature is valid.
+Expected: `lab.crt: OK`.
 
-**4. (Optional) Trust your lab CA locally so `curl`/browser stop warning:**
+**4. Trust your lab CA locally (optional - so `curl`/browser stop warning):**
 
 ```bash
-sudo cp ca.crt /usr/local/share/ca-certificates/lab-root-ca.crt
-sudo update-ca-certificates
+cp ca.crt /usr/local/share/ca-certificates/lab-root-ca.crt
+update-ca-certificates
 ```
 
 ### Option B - Real-world production path: Let's Encrypt (free, publicly trusted)
 
-For a real internet-facing domain, use ACME via Certbot instead of self-signing:
+For a real internet-facing domain use ACME via Certbot:
 
 ```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d your.domain -d www.your.domain
+certbot --nginx -d your.domain -d www.your.domain
 ```
 
-Certbot will automatically obtain the cert, edit your Nginx config, and reload it. We'll simulate the renewal behavior of this path in Part 4.
+This needs a publicly resolvable domain pointed at a public IP, so it **won't succeed inside this lab environment** - the command is here so you can read/discuss the flow and try it later against a real domain.
+
+Certbot automatically obtains the cert, edits the Nginx config, and reloads it. Part 4.5 shows how its auto-renewal works.
 
 ---
 
@@ -260,17 +282,17 @@ Certbot will automatically obtain the cert, edit your Nginx config, and reload i
 
 ### 4.1 Nginx
 
-Lock down the key's permissions first (private keys should never be world-readable):
+Lock down the key's permissions (private keys should never be world-readable):
 
 ```bash
-sudo chmod 600 /etc/ssl/lab/lab.key
-sudo chown root:root /etc/ssl/lab/lab.key /etc/ssl/lab/lab.crt
+chmod 600 /etc/ssl/lab/lab.key
+chown root:root /etc/ssl/lab/lab.key /etc/ssl/lab/lab.crt
 ```
 
 Create a site config:
 
 ```bash
-cat <<'EOF' | sudo tee /etc/nginx/sites-available/lab.local
+cat <<'EOF' > /etc/nginx/sites-available/lab.local
 server {
     listen 443 ssl;
     server_name lab.local www.lab.local;
@@ -278,8 +300,6 @@ server {
     ssl_certificate     /etc/ssl/lab/lab.crt;
     ssl_certificate_key /etc/ssl/lab/lab.key;
 
-    # If using Option A (your own mini-CA), clients validating against ca.crt
-    # need the full chain; for a real CA, concatenate cert + intermediate here.
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     add_header          Strict-Transport-Security "max-age=63072000" always;
@@ -295,49 +315,76 @@ server {
 }
 EOF
 
-sudo ln -sf /etc/nginx/sites-available/lab.local /etc/nginx/sites-enabled/lab.local
+ln -sf /etc/nginx/sites-available/lab.local /etc/nginx/sites-enabled/lab.local
+rm -f /etc/nginx/sites-enabled/default
 ```
 
-**Always test the config before reloading** - a typo here can take the whole server down:
+**Always test the config before reloading:**
 
 ```bash
-sudo nginx -t
+nginx -t
 ```
 
 Expected: `nginx: configuration file /etc/nginx/nginx.conf test is successful`
 
-Reload (not `restart`, so existing connections aren't dropped):
+Start/reload Nginx:
 
 ```bash
+# Docker users (no systemd):
+service nginx start   # or: nginx
+
+# VM users:
 sudo systemctl reload nginx
 ```
 
-Point a local hostname at this server and test:
+Test the HTTP→HTTPS redirect and TLS handshake:
 
 ```bash
-echo "127.0.0.1 lab.local www.lab.local" | sudo tee -a /etc/hosts
-curl -vk https://lab.local
+curl -vk --resolve lab.local:443:127.0.0.1 --resolve lab.local:80:127.0.0.1 http://lab.local
+curl -vk --resolve lab.local:443:127.0.0.1 https://lab.local
 ```
 
-`-k` skips cert trust validation (expected, since it's self-/lab-signed). You should see the HTTP response and, in the verbose handshake log, `SSL certificate verify result: ... ` plus the negotiated protocol/cipher.
+`-k` skips cert trust validation. You should see the `301` redirect on port 80 and, on port 443, the HTML response plus the negotiated protocol/cipher.
 
 Now test **with** validation, using your CA (should succeed without `-k`):
 
 ```bash
-curl -v --cacert /etc/ssl/lab/ca.crt https://lab.local
+curl -v --resolve lab.local:443:127.0.0.1 --cacert /etc/ssl/lab/ca.crt https://lab.local
 ```
 
 Expected: no certificate error, and the page loads.
 
+**From your host machine / browser (optional):**
+
+The compose file publishes container port `443` as host port `8443`. Either add `127.0.0.1 lab.local` to your host's `/etc/hosts` and browse to `https://lab.local:8443`, or test with curl:
+
+```powershell
+curl.exe -vk --resolve lab.local:8443:127.0.0.1 https://lab.local:8443
+```
+
 ### 4.2 Apache (alternative/additional practice)
 
-If you want to practice on Apache instead/also:
+**Docker users only:** Apache conflicts with Nginx (both want port 443 in the same container). This section shows the workaround.
+
+**VM users:** Skip the port binding change; each service runs on its own box.
+
+#### Docker: Reconfigure for port 8444
+
+Apache's default `ports.conf` tries to bind port 443 (already taken by Nginx). Reconfigure:
 
 ```bash
-sudo apt install -y apache2
-sudo a2enmod ssl
-cat <<'EOF' | sudo tee /etc/apache2/sites-available/lab-ssl.conf
-<VirtualHost *:443>
+cat <<'EOF' > /etc/apache2/ports.conf
+Listen 8444
+EOF
+
+a2dissite 000-default
+```
+
+#### All users: Configure the SSL site
+
+```bash
+cat <<'EOF' > /etc/apache2/sites-available/lab-ssl.conf
+<VirtualHost *:8444>
     ServerName lab.local
     ServerAlias www.lab.local
     SSLEngine on
@@ -346,15 +393,32 @@ cat <<'EOF' | sudo tee /etc/apache2/sites-available/lab-ssl.conf
     DocumentRoot /var/www/html
 </VirtualHost>
 EOF
-sudo a2ensite lab-ssl
+
+a2enmod ssl
+a2ensite lab-ssl
+```
+
+Test and start:
+
+```bash
+# Docker users:
+apachectl configtest && service apache2 start
+
+# VM users:
 sudo apachectl configtest && sudo systemctl reload apache2
+```
+
+Test locally:
+
+```bash
+curl -vk --resolve lab.local:8444:127.0.0.1 https://lab.local:8444
 ```
 
 ### 4.3 Common installation pitfalls to check
 
-- **Permission denied reading the key:** the web server user (`www-data`) must be able to read `lab.key`; owning it `root:root` with `600` works because Nginx/Apache master processes start as root and drop privileges after binding, but double-check with `sudo nginx -t` which will surface read errors.
-- **SAN/hostname mismatch:** if `curl`/browser complains the cert isn't valid for the name you're requesting, confirm `-servername`/URL hostname is in the cert's SAN list (Part 2.5).
-- **Wrong chain order:** when installing a CA-issued (not self-signed) cert, `ssl_certificate` must contain the **leaf cert followed by any intermediate certs**, concatenated in that order, e.g. `cat your_domain.crt intermediate.crt > fullchain.crt`.
+- **Permission denied reading the key:** the web server's worker user (`www-data`) must be able to read `lab.key`; `root:root` + `600` works because the master process starts as root and drops privileges after binding - `nginx -t` surfaces read errors early.
+- **SAN/hostname mismatch:** if `curl`/browser complains the cert isn't valid for the requested name, confirm `--resolve`/URL hostname is in the cert's SAN list (Part 2.3).
+- **Wrong chain order:** for a CA-issued (not self-signed) cert, `ssl_certificate` must contain the **leaf cert followed by any intermediate certs**, in that order: `cat your_domain.crt intermediate.crt > fullchain.crt`.
 
 ---
 
@@ -379,7 +443,7 @@ openssl x509 -in /etc/ssl/lab/lab.crt -noout -checkend $((14*86400)) \
 Wrap it into a reusable monitoring script:
 
 ```bash
-cat <<'EOF' | sudo tee /usr/local/bin/check-cert-expiry.sh
+cat <<'EOF' > /usr/local/bin/check-cert-expiry.sh
 #!/usr/bin/env bash
 CERT="/etc/ssl/lab/lab.crt"
 DAYS=14
@@ -390,29 +454,38 @@ if ! openssl x509 -in "$CERT" -noout -checkend $((DAYS*86400)); then
 fi
 echo "[$(date)] OK: $CERT is valid for more than $DAYS days." >> /var/log/cert-check.log
 EOF
-sudo chmod +x /usr/local/bin/check-cert-expiry.sh
-sudo /usr/local/bin/check-cert-expiry.sh
+
+chmod +x /usr/local/bin/check-cert-expiry.sh
+/usr/local/bin/check-cert-expiry.sh
 ```
 
 ### 5.3 Manual renewal (same key/CSR, re-issue with your mini-CA)
 
 ```bash
 cd /etc/ssl/lab
-sudo openssl x509 -req -in lab.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+openssl x509 -req -in lab.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
   -out lab.crt -days 90 -sha256 -extfile lab-ext.cnf
+
 openssl x509 -in lab.crt -noout -dates
-sudo nginx -t && sudo systemctl reload nginx
+
+# Reload without dropping connections:
+# Docker:
+service nginx reload
+# VM:
+# sudo systemctl reload nginx
 ```
 
 Confirm the new `notAfter` date is further out, and that the live server now serves the renewed cert:
 
 ```bash
-echo | openssl s_client -connect lab.local:443 -servername lab.local 2>/dev/null | openssl x509 -noout -enddate
+echo | openssl s_client -connect 127.0.0.1:443 -servername lab.local 2>/dev/null | openssl x509 -noout -enddate
 ```
 
 ### 5.4 Automate the check with cron
 
 ```bash
+service cron start   # Docker users: start cron if not already running
+
 ( crontab -l 2>/dev/null; echo "0 6 * * * /usr/local/bin/check-cert-expiry.sh" ) | crontab -
 crontab -l
 ```
@@ -421,15 +494,14 @@ This runs the expiry check daily at 06:00 and logs to `/var/log/cert-check.log`.
 
 ### 5.5 The production path: Certbot auto-renewal
 
-If you set up Let's Encrypt in Part 3 Option B, Certbot already installs a renewal timer:
+If you had a real domain and ran Option B in Part 3, Certbot installs a renewal timer for you automatically:
 
 ```bash
-sudo certbot renew --dry-run
-systemctl list-timers | grep certbot
-cat /etc/cron.d/certbot 2>/dev/null || systemctl cat certbot.timer
+certbot renew --dry-run
+cat /etc/cron.d/certbot 2>/dev/null || systemctl list-timers | grep certbot
 ```
 
-Certbot renews automatically once a certificate is within 30 days of expiry, and reloads the web server for you via a deploy hook.
+Certbot renews automatically once a certificate is within 30 days of expiry, and reloads the web server for you via a deploy hook - no manual Part 5.3/5.4 steps needed in production.
 
 ### 5.6 What happens when a certificate actually expires (see it yourself)
 
@@ -437,12 +509,13 @@ Issue a cert that's already expired to observe client-side failure behavior:
 
 ```bash
 cd /etc/ssl/lab
-sudo openssl x509 -req -in lab.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+openssl x509 -req -in lab.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
   -out lab-expired.crt -days -1 -sha256 -extfile lab-ext.cnf
+
 openssl verify -CAfile ca.crt lab-expired.crt
 ```
 
-Expected: `error 10 at 0 depth lookup: certificate has expired` - this is exactly the error a browser/client surfaces (e.g. `NET::ERR_CERT_DATE_INVALID`) when a site's cert isn't renewed in time, and it **hard-blocks** access rather than degrading gracefully.
+Expected: `error 10 at 0 depth lookup: certificate has expired` - the same error a browser/client surfaces (e.g. `NET::ERR_CERT_DATE_INVALID`) when a site's cert isn't renewed in time. It **hard-blocks** access rather than degrading gracefully - this is why Parts 5.2-5.5 (automated monitoring/renewal) matter.
 
 ---
 
@@ -452,9 +525,11 @@ Expected: `error 10 at 0 depth lookup: certificate has expired` - this is exactl
 |---|---|---|
 | `nginx -t` fails with "cannot load certificate" | Wrong path or permissions on `.crt`/`.key` | Check path, `chmod 600` the key, confirm ownership |
 | `curl: (60) SSL certificate problem: self signed certificate` | Expected for self-signed/lab CA certs | Use `-k` for testing, or `--cacert ca.crt` to validate properly |
+| `curl: (6) Could not resolve host: lab.local` | DNS doesn't know `lab.local` | Use `--resolve lab.local:443:127.0.0.1` instead of editing `/etc/hosts` |
 | Browser: `ERR_CERT_COMMON_NAME_INVALID` | Hostname not in SAN list | Regenerate CSR/cert with correct `DNS.x` entries (Part 2.3) |
-| `NET::ERR_CERT_DATE_INVALID` | Certificate expired or clock skew | Renew certificate (Part 5.3) or fix server time (`timedatectl`) |
-| `certbot renew` does nothing | Cert not yet within the 30-day renewal window | Expected behavior; force with `certbot renew --force-renewal` to test |
+| `NET::ERR_CERT_DATE_INVALID` | Certificate expired or clock skew | Renew certificate (Part 5.3) |
+| `certbot renew` does nothing / "no certificates found" | Expected in this lab - no real domain is configured | Try it against a real domain + public DNS outside this lab |
+| `service nginx start` says "already running" | Nginx auto-started or was left from a previous run | `service nginx status`, `service nginx reload` instead |
 
 ---
 
@@ -466,7 +541,21 @@ Expected: `error 10 at 0 depth lookup: certificate has expired` - this is exactl
 - [ ] What exact error does a client show when a certificate has expired, and why is it a hard failure rather than a warning?
 - [ ] What's the difference between the manual renewal you just did and what Certbot automates for you?
 
-## Clean up
+---
+
+## Cleanup
+
+### Docker users:
+
+Exit the container and tear down:
+
+```powershell
+exit
+cd labs\https-certificates-linux
+docker compose down -v
+```
+
+### VM users:
 
 ```bash
 sudo rm -f /etc/nginx/sites-enabled/lab.local
