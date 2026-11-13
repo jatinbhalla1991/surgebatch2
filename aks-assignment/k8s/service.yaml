@@ -1,0 +1,13 @@
+# Define the Kubernetes Service and its active color selector here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-svc
+spec:
+  type: LoadBalancer
+  selector:
+    app: myapp
+    version: green
+  ports:
+    - port: 80
+      targetPort: 80
